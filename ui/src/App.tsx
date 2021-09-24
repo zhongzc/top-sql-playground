@@ -10,15 +10,20 @@ import {
   timeFormatter,
   XYBrushArea,
 } from "@elastic/charts";
-import { orderBy, toPairs } from "lodash";
+import {orderBy, toPairs} from "lodash";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { useQuery } from "react-query";
-import { api } from "./utils/api";
+import { api, CPUTimeSeries } from "./utils/api";
 
-function useSeriesData(instance: string) {
+function useSeriesData(
+    instance: string,
+    top: string | null,
+    timeRange: [number, number] | null,
+    window: string | null
+) {
   return useQuery(
-    ["getSeriesData", instance],
-    () => api.getSeriesData(instance),
+    ["getSeriesData", instance, top, timeRange, window],
+    () => api.getCPUTimeData(instance, top, timeRange, window),
     {
       enabled: instance.length > 0,
       refetchOnWindowFocus: false,
@@ -27,26 +32,34 @@ function useSeriesData(instance: string) {
   );
 }
 
-function useDigestMap() {
-  return useQuery("getDigestMap", api.getDigestMap, {
-    refetchOnWindowFocus: false,
-    refetchInterval: 5000,
-  });
-}
-
 const formatter = timeFormatter(niceTimeFormatByDay(1));
 const fullFormatter = timeFormatter("YYYY-MM-DD HH:mm:ss");
 
 function App() {
   const { data: instances } = useQuery("getInstances", api.getInstances);
   const [instance, setInstance] = useState<string | null>(null);
-  const { data: seriesData } = useSeriesData(instance ?? "");
+
+  const topOptions = ["2", "5", "10", "20", "50", "100"]
+  const [top, setTop] = useState<string | null>(null)
+
+  const windowOptions = ["1m", "5m", "20m", "30m", "1h", "3h", "6h", "12h", "24h"]
+  const [window, setWindow] = useState<string | null>(null)
+
   const [timeRange, setTimeRange] = useState<[number, number] | null>(null);
-  const { data: digestMap } = useDigestMap();
+
+  const { data: seriesData } = useSeriesData(instance ?? "", top, timeRange, window);
 
   const handleInstanceChange = useCallback((e) => {
     setInstance(e.target.value);
   }, []);
+
+  const handleTopChange = useCallback((e) => {
+    setTop(e.target.value);
+  }, [])
+
+  const handleWindowChange = useCallback((e) => {
+    setWindow(e.target.value);
+  }, [])
 
   const plotContainer = useRef(null);
 
@@ -62,59 +75,57 @@ function App() {
 
   const chartData = useMemo(() => {
     if (!seriesData) {
-      return {};
+      return { data: [] };
     }
+
+    console.log(seriesData)
+
     // Group by SQL digest + timestamp and sum their values
-    const valuesByDigestAndTs: Record<string, Record<number, number>> = {};
-    const sumValueByDigest: Record<string, number> = {};
+    const valuesByDigest: Record<string, CPUTimeSeries> = {};
+    const sumByDigest: Record<string, number> = {};
     seriesData.forEach((series) => {
-      if (!valuesByDigestAndTs[series.SQLDigest]) {
-        valuesByDigestAndTs[series.SQLDigest] = {};
-      }
-      const map = valuesByDigestAndTs[series.SQLDigest];
-      let sum = 0;
-      series.UnorderedValues.forEach((values) => {
-        if (
-          timeRange &&
-          (values.Timestamp < timeRange[0] || values.Timestamp > timeRange[1])
-        ) {
-          return;
-        }
-        if (!map[values.Timestamp]) {
-          map[values.Timestamp] = values.CPUInMS;
-        } else {
-          map[values.Timestamp] += values.CPUInMS;
-        }
-        sum += values.CPUInMS;
-      });
-      if (!sumValueByDigest[series.SQLDigest]) {
-        sumValueByDigest[series.SQLDigest] = sum;
-      } else {
-        sumValueByDigest[series.SQLDigest] += sum;
+      valuesByDigest[series.sql_digest] = series;
+
+      sumByDigest[series.sql_digest] = 0;
+      for (const cpu of series.cpu_time_millis) {
+        sumByDigest[series.sql_digest] += cpu;
       }
     });
 
+    console.log(valuesByDigest)
+    console.log(sumByDigest)
+
     // Order by digest
     const orderedDigests = orderBy(
-      toPairs(sumValueByDigest),
-      ["1"],
+        toPairs(sumByDigest),
+      ["1", "0"],
       ["desc"]
-    ).map((v) => v[0]);
+    ).map((d) => d[0]);
 
-    const datumByDigest: Record<string, Array<[number, number]>> = {};
+    const data: Array<Group> = [];
     for (const digest of orderedDigests) {
-      const datum: Array<[number, number]> = [];
+      const series: Array<[number, number]> = [];
+      const rawSeries = valuesByDigest[digest];
 
-      const valuesByTs = valuesByDigestAndTs[digest];
-      for (const ts in valuesByTs) {
-        const value = valuesByTs[ts];
-        datum.push([Number(ts), value]);
+      const len = rawSeries.cpu_time_millis.length;
+      for (let i = 0; i < len; i++) {
+        let ts = rawSeries.timestamp_secs[i]*1000;
+        let cpu = rawSeries.cpu_time_millis[i];
+        series.push([ts, cpu]);
       }
 
-      datumByDigest[digest] = datum;
+      data.push({
+        Label: {
+          SQLDigest: rawSeries.sql_digest,
+          SQLText: rawSeries.sql_text
+        },
+        Series: series
+      });
     }
 
-    return datumByDigest;
+    console.log(data)
+
+    return { data };
   }, [seriesData, timeRange]);
 
   return (
@@ -128,10 +139,34 @@ function App() {
             >
               {instances &&
                 instances.map((i) => (
-                  <option value={i} key={i}>
-                    {i}
+                  <option value={i.instance} key={i.instance}>
+                    {i.job} - {i.instance}
                   </option>
                 ))}
+            </Select>
+          </Box>
+          <Box>
+            <Select
+                placeholder="Select Top"
+                onChange={handleTopChange}
+            >
+              {topOptions.map((opt) => (
+                  <option value={opt} key={opt}>
+                    {opt}
+                  </option>
+              ))}
+            </Select>
+          </Box>
+          <Box>
+            <Select
+                placeholder="Select Window"
+                onChange={handleWindowChange}
+            >
+              {windowOptions.map((opt) => (
+                  <option value={opt} key={opt}>
+                    {opt}
+                  </option>
+              ))}
             </Select>
           </Box>
           <Box>
@@ -162,18 +197,18 @@ function App() {
             tickFormat={formatter}
           />
           <Axis id="left" position={Position.Left} />
-          {Object.keys(chartData).map((digest) => {
+          {chartData.data && chartData.data.map((group) => {
             return (
               <BarSeries
-                key={digest}
-                id={digest}
+                key={group.Label.SQLDigest}
+                id={group.Label.SQLDigest}
                 xScaleType={ScaleType.Time}
                 yScaleType={ScaleType.Linear}
                 xAccessor={0}
                 yAccessors={[1]}
                 stackAccessors={[0]}
-                data={chartData[digest]}
-                name={digestMap?.[digest]?.slice(0, 50) ?? digest.slice(0, 6)}
+                data={group.Series}
+                name={group.Label.SQLText.length > 0 ? group.Label.SQLText : group.Label.SQLDigest}
               />
             );
           })}
@@ -182,5 +217,15 @@ function App() {
     </Flex>
   );
 }
+
+type Label = {
+  SQLDigest: string;
+  SQLText: string;
+};
+
+type Group = {
+  Label: Label;
+  Series: Array<[number, number]>;
+};
 
 export default App;

@@ -1,83 +1,54 @@
 import axios from "axios";
 
-const baseURL = (function getApiHost(): string {
-  let apiPrefix;
-  if (process.env.NODE_ENV === "development") {
-    apiPrefix = "http://127.0.0.1:14000/api";
-  } else {
-    apiPrefix = "/api";
-  }
-  return apiPrefix;
-})();
-
 const client = axios.create({
-  baseURL,
+  baseURL:  "http://127.0.0.1:8428/topsql/v1",
 });
 
-export type GetInstanceResponse = string[];
-
-export type Value = {
-  Timestamp: number;
-  CPUInMS: number;
+export type Instance = {
+  instance: string;
+  job: string;
 };
 
-export type Series = {
-  Instance: string;
-  PlanDigest: string | null;
-  SQLDigest: string;
-  UnorderedValues: Value[];
+export type GetInstanceResponse = Instance[];
+
+export type CPUTimeSeries = {
+  sql_digest: string;
+  plan_digest: string;
+  sql_text: string;
+  plan_text: string;
+  timestamp_secs: number[];
+  cpu_time_millis: number[];
 };
 
-export type GetSeriesDataResponse = Series[];
+export type GetCPUTimeDataResponse = CPUTimeSeries[];
 
 export const api = {
   async getInstances(): Promise<GetInstanceResponse> {
-    const r = await client.get("/series/all");
-    return r.data;
+    const r = await client.get("/instances");
+    return r.data.data;
   },
 
-  async getSeriesData(instance: string): Promise<GetSeriesDataResponse> {
-    const r = await client.get(`/series/by_instance/${instance}`);
-    const data = r.data as GetSeriesDataResponse;
-
-    // 1. Sort data
-    data.sort((a, b) => {
-      const c = a.SQLDigest.localeCompare(b.SQLDigest);
-      if (c !== 0) {
-        return c;
-      }
-      return (a.PlanDigest ?? "").localeCompare(b.PlanDigest ?? "");
-    });
-
-    // 2. Sort values for each series
-    data.forEach((series) => {
-      series.UnorderedValues.sort((a, b) => {
-        return a.Timestamp - b.Timestamp;
-      });
-    });
-
-    // 3. Deduplicate
-    data.forEach((series) => {
-      let lastTimestamp: number | null = null;
-      const sortedValues: Value[] = [];
-      series.UnorderedValues.forEach((v) => {
-        if (v.Timestamp === lastTimestamp) {
-          return;
-        }
-        sortedValues.push({
-          ...v,
-          Timestamp: v.Timestamp * 1000, // Convert to ms
-        });
-        lastTimestamp = v.Timestamp;
-      });
-      series.UnorderedValues = sortedValues;
-    });
-
-    return data;
-  },
-
-  async getDigestMap(): Promise<Record<string, string>> {
-    const r = await client.get(`/digests/sql`);
-    return r.data;
+  async getCPUTimeData(
+      instance: string,
+      top: string | null,
+      timeRange: [number, number] | null,
+      window: string | null,
+  ): Promise<GetCPUTimeDataResponse> {
+    let start = null;
+    if (timeRange) {
+      start = timeRange[0] / 1000;
+    }
+    let end = null;
+    if (timeRange) {
+      end = timeRange[1] / 1000;
+    }
+    if (top?.length == 0) {
+      top = "-1";
+    }
+    const r = await client.get(
+        `/cpu_time`,
+        { params: { instance, top, start, end, window }},
+    );
+    return r.data.data;
   },
 };
