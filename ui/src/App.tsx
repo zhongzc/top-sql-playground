@@ -156,7 +156,7 @@ function App() {
                         >
                             {topOptions.map((opt) => (
                                 <option value={opt} key={opt}>
-                                    {opt}
+                                    Top {opt}
                                 </option>
                             ))}
                         </Select>
@@ -168,7 +168,7 @@ function App() {
                         >
                             {windowOptions.map((opt) => (
                                 <option value={opt} key={opt}>
-                                    {opt}
+                                    Window: {opt}
                                 </option>
                             ))}
                         </Select>
